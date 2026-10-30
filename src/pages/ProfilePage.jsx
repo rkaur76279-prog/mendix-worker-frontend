@@ -18,7 +18,7 @@ import {
 export const ProfilePage = () => {
   const { worker, updateWorkerProfile, toggleAvailability } = useAuth();
 
-  const [fullName, setFullName] = useState(worker?.fullName || '');
+  const [fullName, setFullName] = useState(worker?.fullName || worker?.name || '');
   const [phone, setPhone] = useState(worker?.phone || '');
   const [serviceArea, setServiceArea] = useState(worker?.serviceArea || 'Mumbai & Suburbs');
   const [address, setAddress] = useState(worker?.address || '');

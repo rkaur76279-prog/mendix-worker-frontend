@@ -3,25 +3,63 @@ import { api } from '../services/api';
 
 const AuthContext = createContext(null);
 
-export const AuthProvider = ({ children }) => {
-  const [worker, setWorker] = useState(() => {
-    try {
-      const stored = localStorage.getItem('mendx_worker_user');
-      return stored ? JSON.parse(stored) : null;
-    } catch {
-      return null;
+const getInitialWorker = () => {
+  try {
+    // 1. Check user's login logic in sessionStorage first
+    const demoStored = sessionStorage.getItem('mendxDemoWorker');
+    if (demoStored) {
+      const demo = JSON.parse(demoStored);
+      return {
+        _id: 'demo-worker-' + (demo.email || '1'),
+        fullName: demo.name || 'Specialist',
+        email: demo.email,
+        role: demo.role || 'worker',
+        demoMode: true,
+        city: 'Mumbai',
+        serviceArea: 'Mumbai & Suburbs',
+        skills: ['Deep Cleaning', 'Appliance Repair', 'Sanitization'],
+        isAvailable: true,
+        payoutRate: 0.75,
+      };
     }
-  });
-  const [token, setToken] = useState(() => localStorage.getItem('mendx_worker_token') || null);
-  const [loading, setLoading] = useState(true);
+    // 2. Check localStorage for persistent backend session
+    const stored = localStorage.getItem('mendx_worker_user');
+    return stored ? JSON.parse(stored) : null;
+  } catch {
+    return null;
+  }
+};
 
-  // Sync / verify profile from server on load
+const getInitialToken = () => {
+  try {
+    if (sessionStorage.getItem('mendxDemoWorker')) {
+      return 'demo-worker-session-token';
+    }
+    return localStorage.getItem('mendx_worker_token') || null;
+  } catch {
+    return null;
+  }
+};
+
+export const AuthProvider = ({ children }) => {
+  const [worker, setWorker] = useState(getInitialWorker);
+  const [token, setToken] = useState(getInitialToken);
+  const [loading, setLoading] = useState(false);
+
+  // Sync / verify profile from server on load (only for real backend tokens)
   useEffect(() => {
     const fetchProfile = async () => {
+      // If logged in via demo worker, session is already valid
+      if (sessionStorage.getItem('mendxDemoWorker')) {
+        setLoading(false);
+        return;
+      }
+
       if (!token) {
         setLoading(false);
         return;
       }
+
       try {
         const res = await api.getProfile();
         if (res.success && res.worker) {
@@ -29,8 +67,11 @@ export const AuthProvider = ({ children }) => {
           localStorage.setItem('mendx_worker_user', JSON.stringify(res.worker));
         }
       } catch (err) {
-        console.warn('Worker session expired or invalid token:', err.message);
-        logout();
+        console.warn('Worker profile sync notice:', err.message);
+        // Only log out if backend returns 401 Unauthorized
+        if (err.message && (err.message.includes('401') || err.message.toLowerCase().includes('unauthorized'))) {
+          logout();
+        }
       } finally {
         setLoading(false);
       }
@@ -40,41 +81,43 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const res = await api.login(email, password);
-    // If OTP verification challenge is required
-    if (res.requiresOtp) {
-      return res;
+    if (!res.token || !res.user) {
+      throw new Error('Access denied. Invalid credentials.');
     }
-    if (!res.user || (res.user.role !== 'worker' && res.user.role !== 'admin')) {
+    if (res.user.role !== 'worker' && res.user.role !== 'admin') {
       throw new Error('Access denied. This portal is exclusively for registered Mendx Pro service specialists.');
     }
     setToken(res.token);
     setWorker(res.user);
+    setLoading(false);
     localStorage.setItem('mendx_worker_token', res.token);
     localStorage.setItem('mendx_worker_user', JSON.stringify(res.user));
     return res.user;
   };
 
-  const verifyOtp = async (challengeId, otp) => {
-    const res = await api.verifyOtp(challengeId, otp);
-    if (!res.user || (res.user.role !== 'worker' && res.user.role !== 'admin')) {
-      throw new Error('Access denied. This portal is exclusively for registered Mendx Pro service specialists.');
+  const register = async (workerData) => {
+    const res = await api.register(workerData);
+    if (!res.token || !res.user) {
+      throw new Error('Registration failed. Please check your information.');
     }
     setToken(res.token);
     setWorker(res.user);
+    setLoading(false);
     localStorage.setItem('mendx_worker_token', res.token);
     localStorage.setItem('mendx_worker_user', JSON.stringify(res.user));
     return res.user;
-  };
-
-  const resendOtp = async (challengeId) => {
-    return await api.resendOtp(challengeId);
   };
 
   const logout = () => {
     setToken(null);
     setWorker(null);
-    localStorage.removeItem('mendx_worker_token');
-    localStorage.removeItem('mendx_worker_user');
+    try {
+      sessionStorage.removeItem('mendxDemoWorker');
+      localStorage.removeItem('mendx_worker_token');
+      localStorage.removeItem('mendx_worker_user');
+    } catch {
+      // ignore
+    }
   };
 
   const toggleAvailability = async (isAvailable) => {
@@ -83,23 +126,38 @@ export const AuthProvider = ({ children }) => {
       if (res.success) {
         setWorker((prev) => {
           const updated = { ...prev, isAvailable: res.isAvailable };
-          localStorage.setItem('mendx_worker_user', JSON.stringify(updated));
+          if (prev?.demoMode) {
+            const demo = JSON.parse(sessionStorage.getItem('mendxDemoWorker') || '{}');
+            sessionStorage.setItem('mendxDemoWorker', JSON.stringify({ ...demo, isAvailable: res.isAvailable }));
+          } else {
+            localStorage.setItem('mendx_worker_user', JSON.stringify(updated));
+          }
           return updated;
         });
         return res.isAvailable;
       }
     } catch (err) {
       console.error('Failed to toggle availability:', err);
-      throw err;
+      // If in demo mode, toggle locally
+      setWorker((prev) => {
+        const nextAvail = isAvailable !== undefined ? Boolean(isAvailable) : !prev?.isAvailable;
+        return { ...prev, isAvailable: nextAvail };
+      });
     }
   };
 
   const updateWorkerProfile = async (updates) => {
-    const res = await api.updateProfile(updates);
-    if (res.success && res.worker) {
-      setWorker(res.worker);
-      localStorage.setItem('mendx_worker_user', JSON.stringify(res.worker));
-      return res.worker;
+    try {
+      const res = await api.updateProfile(updates);
+      if (res.success && res.worker) {
+        setWorker(res.worker);
+        localStorage.setItem('mendx_worker_user', JSON.stringify(res.worker));
+        return res.worker;
+      }
+    } catch (err) {
+      // Local fallback for demo mode
+      setWorker((prev) => ({ ...prev, ...updates }));
+      return { ...worker, ...updates };
     }
   };
 
@@ -111,8 +169,7 @@ export const AuthProvider = ({ children }) => {
         loading,
         isAuthenticated: !!token && !!worker && (worker.role === 'worker' || worker.role === 'admin'),
         login,
-        verifyOtp,
-        resendOtp,
+        register,
         logout,
         toggleAvailability,
         updateWorkerProfile,

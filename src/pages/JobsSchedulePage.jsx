@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import {
@@ -33,8 +33,15 @@ export const JobsSchedulePage = () => {
   const { worker, toggleAvailability } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const location = useLocation();
+  const defaultView = location.pathname.includes('/schedule')
+    ? 'schedule'
+    : location.pathname.includes('/reviews')
+    ? 'reviews'
+    : 'jobs';
+
   // Primary page view: 'jobs' | 'schedule' | 'reviews'
-  const activeView = searchParams.get('view') || 'jobs';
+  const activeView = searchParams.get('view') || defaultView;
   // Active job status tab: 'all' | 'pending' | 'accepted' | 'in-progress' | 'completed' | 'rejected' | 'cancelled'
   const activeTab = searchParams.get('tab') || 'all';
 
